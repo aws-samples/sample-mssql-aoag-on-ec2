@@ -1,0 +1,110 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+###############################################################################
+# Example: 3-Node AOAG Cluster Configuration
+# - 1 Primary (synchronous, automatic failover)
+# - 2 Synchronous secondaries (automatic failover)
+###############################################################################
+
+namespace = "aoag3node"
+
+vpc_id             = "vpc-0123456789abcdef0"
+aws_region_primary = "us-east-1"
+
+# All secondaries are synchronous
+sync_replica_count = 2
+
+# Instance Configuration - 3 Nodes
+instances_data_map = {
+  # Node 1: PRIMARY
+  "AWSAOAG3N01" = {
+    ami_id            = "ami-0123456789abcdef0"
+    instance_type     = "m5.large"
+    availability_zone = "us-east-1a"
+    subnet_id         = "subnet-0123456789abcdef0"
+    key_name          = "my-key-pair"
+    private_ips_count = 1
+    root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
+    ebs_block_device = [
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
+      { volume_size = 50, volume_type = "gp3", volume_iops = 3000, device_name = "xvdg" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdh" }
+    ]
+    tags = { "Node" = "Primary" }
+  }
+
+  # Node 2: SECONDARY - Sync
+  "AWSAOAG3N02" = {
+    ami_id            = "ami-0123456789abcdef0"
+    instance_type     = "m5.large"
+    availability_zone = "us-east-1b"
+    subnet_id         = "subnet-0fedcba9876543210"
+    key_name          = "my-key-pair"
+    private_ips_count = 1
+    root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
+    ebs_block_device = [
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
+      { volume_size = 50, volume_type = "gp3", volume_iops = 3000, device_name = "xvdg" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdh" }
+    ]
+    tags = { "Node" = "Secondary" }
+  }
+
+  # Node 3: SECONDARY - Sync
+  "AWSAOAG3N03" = {
+    ami_id            = "ami-0123456789abcdef0"
+    instance_type     = "m5.large"
+    availability_zone = "us-east-1a"
+    subnet_id         = "subnet-0123456789abcdef0"
+    key_name          = "my-key-pair"
+    private_ips_count = 1
+    root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
+    ebs_block_device = [
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
+      { volume_size = 50, volume_type = "gp3", volume_iops = 3000, device_name = "xvdg" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdh" }
+    ]
+    tags = { "Node" = "Secondary" }
+  }
+}
+
+# Active Directory
+domain_name      = "MYEXDOM.COM"
+domain_join_user = "myexdomadm"
+domain_secret    = "myexdom"
+dns_ips          = ["10.0.1.72"]
+
+# Cluster Configuration
+clustername             = "aoag3nclus"
+availability_group_name = "AG3NODE"
+listener_name           = "AGLIST3N"
+listener_port           = 1433
+
+# SQL Server Configuration
+SQLVersion              = "2022"
+sql_service_account     = "awssqlsvc01"
+sql_service_account_key = "SQLServiceAccount"
+
+SQLConfig = {
+  "INST01" = {
+    InstallConfig = {
+      SQLTEMPDBDIR = "T:\\SQL\\MSSQL\\DATA", SQLTEMPDBLOGDIR = "T:\\SQL\\MSSQL\\LOG",
+      INSTALLSQLDATADIR = "E:\\SQL\\MSSQL", SQLUSERDBDIR = "E:\\SQL\\MSSQL\\DATA",
+      SQLUSERDBLOGDIR = "F:\\SQL\\MSSQL\\LOG",
+      INSTALLSHAREDDIR = "C:\\Program Files\\Microsoft SQL Server",
+      INSTALLSHAREDWOWDIR = "C:\\Program Files (x86)\\Microsoft SQL Server",
+      INSTANCEDIR = "E:\\SQL\\MSSQL"
+    }
+    VolumeConfig   = { UserData = { Label = "E:\\SQL-Data", Size = 100 }, UserLog = { Label = "F:\\SQL-Log", Size = 50 } }
+    Customizations = { SQLMINMEMORY = 4096, SQLMAXMEMORY = 16384, SQLMAXDOP = 4, TCPPORT = 1433 }
+    FEATURES       = "SQLENGINE,REPLICATION,FULLTEXT"
+  }
+}
+
+ec2_security_group_ids = "sg-0123456789abcdef0"
+bucket_name            = "123456789012-sql-aoag-automation"
+sql_s3_bucket_name     = "123456789012-sql-aoag-automation"
+is_ha                  = true
+run_ssm_associations   = true
+tags                   = { Namespace = "aoag3node", ClusterSize = "3-node" }

@@ -1,0 +1,168 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+###############################################################################
+# Example: 5-Node AOAG Cluster Configuration
+# - 1 Primary (synchronous, automatic failover)
+# - 2 Synchronous secondaries (automatic failover)
+# - 2 Asynchronous secondaries (manual failover - for DR)
+###############################################################################
+
+namespace = "aoag5node"
+
+# Network
+vpc_id             = "vpc-0123456789abcdef0"
+aws_region_primary = "us-east-1"
+
+# Number of synchronous replicas (excluding primary)
+# Set to 2 for 2 sync secondaries with automatic failover
+sync_replica_count = 2
+
+# Instance Configuration - 5 Nodes
+# First node = Primary, rest = Secondary
+# Nodes 2-3 (index 1-2) = Sync secondaries (based on sync_replica_count=2)
+# Nodes 4-5 (index 3-4) = Async secondaries
+instances_data_map = {
+  # Node 1: PRIMARY (Synchronous, Automatic Failover)
+  "AWSAOAG5N01" = {
+    ami_id            = "ami-0123456789abcdef0"
+    instance_type     = "m5.xlarge"
+    availability_zone = "us-east-1a"
+    subnet_id         = "subnet-0123456789abcdef0"
+    key_name          = "my-key-pair"
+    private_ips_count = 1
+    root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
+    ebs_block_device = [
+      { volume_size = 200, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdg" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdh" }
+    ]
+    tags = { "Node" = "Primary", "ReplicaType" = "Sync" }
+  }
+
+  # Node 2: SECONDARY - Synchronous (Automatic Failover)
+  "AWSAOAG5N02" = {
+    ami_id            = "ami-0123456789abcdef0"
+    instance_type     = "m5.xlarge"
+    availability_zone = "us-east-1b"
+    subnet_id         = "subnet-0fedcba9876543210"
+    key_name          = "my-key-pair"
+    private_ips_count = 1
+    root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
+    ebs_block_device = [
+      { volume_size = 200, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdg" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdh" }
+    ]
+    tags = { "Node" = "Secondary", "ReplicaType" = "Sync" }
+  }
+
+  # Node 3: SECONDARY - Synchronous (Automatic Failover)
+  "AWSAOAG5N03" = {
+    ami_id            = "ami-0123456789abcdef0"
+    instance_type     = "m5.xlarge"
+    availability_zone = "us-east-1a"
+    subnet_id         = "subnet-0123456789abcdef0"
+    key_name          = "my-key-pair"
+    private_ips_count = 1
+    root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
+    ebs_block_device = [
+      { volume_size = 200, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdg" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdh" }
+    ]
+    tags = { "Node" = "Secondary", "ReplicaType" = "Sync" }
+  }
+
+  # Node 4: SECONDARY - Asynchronous (Manual Failover - DR)
+  "AWSAOAG5N04" = {
+    ami_id            = "ami-0123456789abcdef0"
+    instance_type     = "m5.xlarge"
+    availability_zone = "us-east-1b"
+    subnet_id         = "subnet-0fedcba9876543210"
+    key_name          = "my-key-pair"
+    private_ips_count = 1
+    root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
+    ebs_block_device = [
+      { volume_size = 200, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdg" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdh" }
+    ]
+    tags = { "Node" = "Secondary", "ReplicaType" = "Async" }
+  }
+
+  # Node 5: SECONDARY - Asynchronous (Manual Failover - DR)
+  "AWSAOAG5N05" = {
+    ami_id            = "ami-0123456789abcdef0"
+    instance_type     = "m5.xlarge"
+    availability_zone = "us-east-1a"
+    subnet_id         = "subnet-0123456789abcdef0"
+    key_name          = "my-key-pair"
+    private_ips_count = 1
+    root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
+    ebs_block_device = [
+      { volume_size = 200, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdg" },
+      { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdh" }
+    ]
+    tags = { "Node" = "Secondary", "ReplicaType" = "Async" }
+  }
+}
+
+# Active Directory
+domain_name      = "MYEXDOM.COM"
+domain_join_user = "myexdomadm"
+domain_secret    = "myexdom"
+dns_ips          = ["10.0.1.72"]
+
+# Cluster Configuration
+clustername             = "aoag5nclus"
+availability_group_name = "AG5NODE"
+listener_name           = "AGLIST5N"
+listener_port           = 1433
+
+# SQL Server Configuration
+SQLVersion              = "2022"
+sql_service_account     = "awssqlsvc01"
+sql_service_account_key = "SQLServiceAccount"
+
+SQLConfig = {
+  "INST01" = {
+    InstallConfig = {
+      SQLTEMPDBDIR        = "T:\\SQL\\MSSQL\\DATA"
+      SQLTEMPDBLOGDIR     = "T:\\SQL\\MSSQL\\LOG"
+      INSTALLSQLDATADIR   = "E:\\SQL\\MSSQL"
+      SQLUSERDBDIR        = "E:\\SQL\\MSSQL\\DATA"
+      SQLUSERDBLOGDIR     = "F:\\SQL\\MSSQL\\LOG"
+      INSTALLSHAREDDIR    = "C:\\Program Files\\Microsoft SQL Server"
+      INSTALLSHAREDWOWDIR = "C:\\Program Files (x86)\\Microsoft SQL Server"
+      INSTANCEDIR         = "E:\\SQL\\MSSQL"
+    }
+    VolumeConfig = {
+      UserData = { Label = "E:\\SQL-Data", Size = 200 }
+      UserLog  = { Label = "F:\\SQL-Log", Size = 100 }
+    }
+    Customizations = {
+      SQLMINMEMORY = 8192, SQLMAXMEMORY = 32768, SQLMAXDOP = 8,
+      SECURITYMODE = "SQL", SQLTEMPDBFILECOUNT = 8, SQLTEMPDBFILESIZE = 200, TCPPORT = 1433
+    }
+    FEATURES = "SQLENGINE,REPLICATION,FULLTEXT"
+  }
+}
+
+# Security
+ec2_security_group_ids = "sg-0123456789abcdef0"
+
+# S3
+bucket_name        = "123456789012-sql-aoag-automation"
+sql_s3_bucket_name = "123456789012-sql-aoag-automation"
+
+# Deployment Flags
+is_ha                = true
+run_ssm_associations = true
+
+tags = {
+  Namespace   = "aoag5node"
+  Environment = "Production"
+  ClusterSize = "5-node"
+}
