@@ -169,6 +169,14 @@ resource "aws_kms_alias" "aoag_cmk_drsite" {
 ###############################################################################
 resource "time_sleep" "wait_for_kms_replica" {
   count           = var.kms_key_id == null && var.deploy_dr ? 1 : 0
-  depends_on      = [aws_kms_replica_key.drsite[0]]
   create_duration = "30s"
+
+  # Carry the replica key ARN through the sleep instead of using depends_on.
+  # Consumers read triggers["kms_key_arn"] rather than the key directly, which
+  # makes "wait for the replica, then use it" an ordinary value dependency.
+  # This lets the aoag_cluster module drop its module-level depends_on - see the
+  # comment on that module in main.tf for why that matters.
+  triggers = {
+    kms_key_arn = aws_kms_replica_key.drsite[0].arn
+  }
 }

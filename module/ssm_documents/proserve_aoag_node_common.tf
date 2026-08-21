@@ -89,6 +89,15 @@ resource "aws_ssm_document" "proserve_aoag_node_common" {
         description = "Set to 'true' to use NVMe instance store for TempDB instead of EBS. The instance type must have instance store volumes."
         default     = "false"
       }
+      AllowedFirewallCidrs = {
+        type        = "String"
+        description = "Comma-separated CIDRs allowed inbound by the host firewall rules (normally the VPC CIDR). For a cross-region DAG, include the peer VPC CIDR or mirroring traffic is dropped."
+      }
+      SQLListenerPort = {
+        type        = "String"
+        default     = "1433"
+        description = "TCP port for the SQL instance and AG listener, opened in the host firewall"
+      }
       NVMeDriveLetter = {
         type        = "String"
         description = "Drive letter for NVMe instance store volume (used for TempDB)"
@@ -441,14 +450,17 @@ resource "aws_ssm_document" "proserve_aoag_node_common" {
         onFailure = "step:sleepend"
       },
       {
-        name   = "OpenWSFCPorts"
+        # Creates scoped inbound firewall rules for the AOAG/WSFC port set and
+        # leaves the Windows Firewall ENABLED. Replaces the previous behaviour of
+        # disabling the firewall and relying solely on the security group.
+        name   = "ConfigureAOAGFirewall"
         action = "aws:runCommand"
         inputs = {
           DocumentName = "AWS-RunPowerShellScript"
           InstanceIds  = ["{{ InstanceId }}"]
           Parameters = {
-            commands         = ["powershell.exe -ExecutionPolicy RemoteSigned -Command 'C:\\aoag\\scripts\\common\\OpenWSFCPorts.ps1';if(!$?){exit 100}"]
-            executionTimeout = "120"
+            commands         = ["powershell.exe -ExecutionPolicy RemoteSigned -Command 'C:\\aoag\\scripts\\common\\Configure-AOAGFirewall.ps1 -AllowedCidrs ''{{ AllowedFirewallCidrs }}'' -ListenerPort {{ SQLListenerPort }}';if(!$?){exit 100}"]
+            executionTimeout = "300"
           }
         }
         onFailure = "step:sleepend"

@@ -177,6 +177,53 @@ resource "aws_ssm_document" "proserve_aoag_create_availability_group" {
         onFailure = "step:sleepend"
       },
       {
+        # Prestage the listener's Virtual Computer Object before asking WSFC to
+        # bring the Network Name resource online.
+        #
+        # WSFC creates the VCO using the CLUSTER IDENTITY (the CNO computer
+        # account), not the credential running the T-SQL below. Domains that
+        # restrict computer-object creation -- AWS Managed Microsoft AD, or any
+        # domain with ms-DS-MachineAccountQuota = 0 -- therefore fail the next
+        # step with SQL Msg 19471 and FailoverClustering event 1194 "Access is
+        # denied", even when the automation holds domain admin credentials.
+        #
+        # Creating the object up front under the domain-join credential, and
+        # granting the CNO Full Control on just that object, means WSFC only has
+        # to write to an object it already controls. No OU-level delegation.
+        name   = "PrestageListenerVCO"
+        action = "aws:runCommand"
+        inputs = {
+          DocumentName = "AWS-RunPowerShellScript"
+          InstanceIds  = ["{{ InstanceId }}"]
+          Parameters = {
+            commands = [
+              "$ErrorActionPreference = 'Stop'",
+              "try {",
+              "  $secret = ConvertFrom-Json (Get-SECSecretValue -SecretId {{ DomainAdminSecretName }} -ErrorAction Stop).SecretString",
+              "  $domain = '{{ DomainDNSName }}'",
+              "  $netbios = ($domain -split '\\.')[0].ToUpper()",
+              "  $user = $netbios + '\\' + '{{ DomainAdminUser }}'",
+              "  $pass = ConvertTo-SecureString $secret.password -AsPlainText -Force",
+              "  $cred = New-Object PSCredential($user, $pass)",
+              "  $s = New-PSSession -ComputerName $env:COMPUTERNAME -Authentication Credssp -Credential $cred -ErrorAction Stop",
+              "  Invoke-Command -Session $s -ErrorAction Stop -ScriptBlock {",
+              "    $ErrorActionPreference = 'Stop'",
+              "    & C:\\aoag\\scripts\\ag\\Prestage-AGListenerVCO.ps1 -ListenerName '{{ ListenerName }}'",
+              "    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw ('Script exited with code ' + $LASTEXITCODE) }",
+              "  }",
+              "  Remove-PSSession $s -ErrorAction SilentlyContinue",
+              "} catch {",
+              "  Write-Host ('ERROR: ' + $_.Exception.Message)",
+              "  Remove-PSSession $s -ErrorAction SilentlyContinue",
+              "  exit 1",
+              "}"
+            ]
+            executionTimeout = ["600"]
+          }
+        }
+        onFailure = "step:sleepend"
+      },
+      {
         name   = "CreateAGListener"
         action = "aws:runCommand"
         inputs = {

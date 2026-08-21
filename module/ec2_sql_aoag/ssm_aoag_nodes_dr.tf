@@ -26,6 +26,14 @@ resource "aws_ssm_association" "aoag_node_common_dr" {
     WindowsADMembers      = var.windows_ad_members
     WindowsLocalGroup     = var.windows_local_group
     HostName              = each.key
+
+    # Host firewall scope. "<vpc_cidr>" resolves to the DR VPC CIDR here. For a
+    # cross-region DAG the primary VPC CIDR must also be present, or the DR node
+    # drops the inbound mirroring endpoint traffic from the primary replica.
+    AllowedFirewallCidrs = join(",", [
+      for c in var.firewall_allowed_cidrs : c == "<vpc_cidr>" ? data.aws_vpc.this_dr[0].cidr_block : c
+    ])
+    SQLListenerPort = tostring(local.listener_port)
     EBSDriveConfig = jsonencode([for vol in each.value.ebs_block_device : {
       volume_size  = vol.volume_size
       drive_letter = vol.drive_letter

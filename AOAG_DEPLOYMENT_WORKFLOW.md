@@ -160,8 +160,9 @@ All AG scripts run under CredSSP sessions as the domain admin. Required because:
 - `Domain-Join-Rename.ps1` - Domain join with hostname rename (IMDSv2)
 - `Initialize-EBSVolumes.ps1` - Format/mount EBS volumes (idempotent, IMDSv2)
 - `Initialize-NVMeVolume.ps1` - NVMe instance store for TempDB (Storage Spaces striped)
-- `Install-WindowsFeatures.ps1` - Windows features, SqlServer module, firewall disable, reboot
-- `Enable-CredSSP.ps1`, `OpenWSFCPorts.ps1`, `AddUserToGroup.ps1`
+- `Install-WindowsFeatures.ps1` - Windows features, SqlServer module (version-pinned), reboot
+- `Configure-AOAGFirewall.ps1` - scoped inbound firewall rules; the firewall stays enabled
+- `Enable-CredSSP.ps1`, `AddUserToGroup.ps1`
 
 ### SQL Install Scripts
 - `Install-SQLStandalone.ps1` - SQL install (SQLENGINE,REPLICATION,FULLTEXT). Works with both license-included AMIs and BYOL (setup.exe at `C:\SQLServerSetup\`)

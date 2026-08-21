@@ -59,7 +59,7 @@ The `Enable-SqlAlwaysOn` cmdlet requires the SQL Server WMI provider, which is r
 | 10 | RestartAfterDomainJoin | Restart-Computer.ps1 |
 | 11 | WaitAfterDomainJoin | aws:sleep PT4M |
 | 12 | EnableCredSSP | Enable-CredSSP.ps1 |
-| 13 | OpenWSFCPorts | OpenWSFCPorts.ps1 |
+| 13 | ConfigureAOAGFirewall | Configure-AOAGFirewall.ps1 |
 | 14 | AddDomainAdminToLocalGroup | AddUserToGroup.ps1 (Domain Admins -> Administrators) |
 | 15 | CreateSQLServiceAccount | Create-ADServiceAccount.ps1 |
 | 16 | WaitForADReplication | Test-ADUser.ps1 |
@@ -160,8 +160,9 @@ The `Enable-SqlAlwaysOn` cmdlet requires the SQL Server WMI provider, which is r
 
 ### Install-WindowsFeatures.ps1
 - Installs: Failover-Clustering, RSAT-Clustering-PowerShell/Mgmt, RSAT-AD-PowerShell, NET-Framework-45-Core
-- Installs SqlServer PowerShell module v21+ from PSGallery
-- Disables Windows Firewall
+- Installs the SqlServer PowerShell module from PSGallery, pinned with `-RequiredVersion`
+- Leaves the Windows Firewall enabled. Scoped inbound rules are created later by
+  `Configure-AOAGFirewall.ps1` (step 13)
 - Reboots via `shutdown.exe /r /t 5` (not Restart-Computer, avoids SSM exit code race)
 
 ## Known Issues and Fixes Applied

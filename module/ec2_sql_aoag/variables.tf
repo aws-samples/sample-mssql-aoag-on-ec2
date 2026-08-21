@@ -122,6 +122,12 @@ variable "run_ssm_associations" {
   default = true
 }
 
+# Gates the destructive AG/DAG failover validation automation. Opt-in.
+variable "run_failover_test" {
+  type    = bool
+  default = false
+}
+
 ###############################################################################
 # SSM Document Names (passed from root-level SSM documents module)
 ###############################################################################
@@ -273,6 +279,22 @@ variable "dr_listener_name" {
 # AWS service endpoints (Systems Manager, S3, KMS, Secrets Manager) and
 # Active Directory domain controllers. The module substitutes "<vpc_cidr>"
 # with the VPC CIDR derived from the first subnet in instances_data_map.
+variable "firewall_allowed_cidrs" {
+  description = "CIDRs allowed inbound by the Windows Firewall rules created on each node. Use \"<vpc_cidr>\" to mean the primary VPC CIDR (resolved at apply time). For a cross-region DAG, add the peer VPC CIDR or mirroring traffic is dropped by the host firewall."
+  type        = list(string)
+  default     = ["<vpc_cidr>"]
+
+  validation {
+    condition     = length(var.firewall_allowed_cidrs) > 0
+    error_message = "firewall_allowed_cidrs must not be empty - the node firewall rules would have no permitted source."
+  }
+
+  validation {
+    condition     = !contains(var.firewall_allowed_cidrs, "0.0.0.0/0")
+    error_message = "firewall_allowed_cidrs must not include 0.0.0.0/0. An any-source rule is equivalent to disabling the host firewall; scope to the VPC CIDR or specific ranges."
+  }
+}
+
 variable "security_group_rules" {
   description = "Inbound and outbound rules for the module-managed AOAG cluster security group. Use \"<vpc_cidr>\" as a placeholder to scope a rule to the VPC CIDR (resolved at apply time)."
   type = map(object({
@@ -290,6 +312,8 @@ variable "security_group_rules" {
     "3343_udp"        = { type = "ingress", from_port = 3343, to_port = 3343, protocol = "udp", cidr_blocks = ["<vpc_cidr>"], description = "WSFC cluster communication" }
     "135_tcp"         = { type = "ingress", from_port = 135, to_port = 135, protocol = "tcp", cidr_blocks = ["<vpc_cidr>"], description = "RPC Endpoint Mapper (WSFC)" }
     "137_udp"         = { type = "ingress", from_port = 137, to_port = 137, protocol = "udp", cidr_blocks = ["<vpc_cidr>"], description = "NetBIOS name service (WSFC)" }
+    "138_udp"         = { type = "ingress", from_port = 138, to_port = 138, protocol = "udp", cidr_blocks = ["<vpc_cidr>"], description = "NetBIOS datagram service (WSFC)" }
+    "1434_udp"        = { type = "ingress", from_port = 1434, to_port = 1434, protocol = "udp", cidr_blocks = ["<vpc_cidr>"], description = "SQL Browser - resolves named instances to their dynamic TCP port" }
     "445_tcp"         = { type = "ingress", from_port = 445, to_port = 445, protocol = "tcp", cidr_blocks = ["<vpc_cidr>"], description = "SMB (file sharing, WSFC)" }
     "5985_5986_tcp"   = { type = "ingress", from_port = 5985, to_port = 5986, protocol = "tcp", cidr_blocks = ["<vpc_cidr>"], description = "WinRM for SSM remote execution" }
     "49152_65535_tcp" = { type = "ingress", from_port = 49152, to_port = 65535, protocol = "tcp", cidr_blocks = ["<vpc_cidr>"], description = "Dynamic ports for cluster RPC" }

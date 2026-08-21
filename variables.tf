@@ -35,16 +35,27 @@ variable "aws_region_dr" {
 variable "instances_data_map" {
   description = "Map of EC2 instance configurations for AOAG nodes"
   type = map(object({
-    ami_id                 = string
-    instance_type          = string
-    availability_zone      = string
-    subnet_id              = string
-    iam_instance_profile   = string
-    platform               = string
-    key_name               = string
-    user_data              = string
-    vpc_security_group_ids = list(string)
-    private_ips_count      = number
+    ami_id               = string
+    instance_type        = string
+    availability_zone    = string
+    subnet_id            = string
+    iam_instance_profile = string
+    platform             = string
+    key_name             = string
+    user_data            = string
+
+    # Optional per-node ADDITIONAL security groups, merged on top of the
+    # module-managed AOAG SG and var.ec2_security_group_ids. Prefer the
+    # cluster-wide var.ec2_security_group_ids: WSFC requires symmetric
+    # connectivity between all replicas, and per-node SG differences are a
+    # common cause of asymmetric-reachability failures that are hard to
+    # diagnose (AG stuck in "Not Synchronizing").
+    vpc_security_group_ids = optional(list(string), [])
+
+    # Secondary private IPs on the node ENI. Minimum 2: index 0 is consumed as
+    # the WSFC Cluster Name Object (CNO) IP and index 1 as the AG listener IP.
+    private_ips_count = optional(number, 2)
+
     root_block_device = object({
       volume_size = number
       volume_type = string
@@ -62,21 +73,40 @@ variable "instances_data_map" {
     }))
     tags = map(string)
   }))
+
+  # The module derives the WSFC CNO IP and the AG listener IP positionally from
+  # the ENI's secondary IPs (index 0 and index 1). Terraform's element() wraps
+  # the index modulo list length rather than erroring, so a value of 1 would
+  # silently resolve BOTH the CNO and the listener to the same address instead
+  # of failing loudly. Enforce the floor here so it fails at plan time.
+  validation {
+    condition = alltrue([
+      for name, node in var.instances_data_map : node.private_ips_count >= 2
+    ])
+    error_message = "private_ips_count must be >= 2 for every node in instances_data_map: index 0 is used for the WSFC CNO IP and index 1 for the AG listener IP."
+  }
 }
 
 variable "instances_data_map_dr" {
   description = "Map of EC2 instance configurations for DR AOAG nodes"
   type = map(object({
-    ami_id                 = string
-    instance_type          = string
-    availability_zone      = string
-    subnet_id              = string
-    iam_instance_profile   = string
-    platform               = string
-    key_name               = string
-    user_data              = string
-    vpc_security_group_ids = list(string)
-    private_ips_count      = number
+    ami_id               = string
+    instance_type        = string
+    availability_zone    = string
+    subnet_id            = string
+    iam_instance_profile = string
+    platform             = string
+    key_name             = string
+    user_data            = string
+
+    # Optional per-node ADDITIONAL security groups, merged on top of the
+    # module-managed DR AOAG SG and var.ec2_security_group_ids_dr.
+    vpc_security_group_ids = optional(list(string), [])
+
+    # Secondary private IPs on the node ENI. Minimum 2: index 0 is consumed as
+    # the WSFC Cluster Name Object (CNO) IP and index 1 as the AG listener IP.
+    private_ips_count = optional(number, 2)
+
     root_block_device = object({
       volume_size = number
       volume_type = string
@@ -95,6 +125,13 @@ variable "instances_data_map_dr" {
     tags = map(string)
   }))
   default = {}
+
+  validation {
+    condition = alltrue([
+      for name, node in var.instances_data_map_dr : node.private_ips_count >= 2
+    ])
+    error_message = "private_ips_count must be >= 2 for every node in instances_data_map_dr: index 0 is used for the WSFC CNO IP and index 1 for the AG listener IP."
+  }
 }
 
 ###############################################################################
@@ -198,11 +235,35 @@ variable "SQLConfig" {
 ###############################################################################
 # The module creates a security group with all inbound rules required for
 # AOAG (WSFC, SMB, mirroring endpoint, dynamic ports) and an all-outbound
-# rule. The variables below let you attach an additional security group on
-# top (for example, RDP from a bastion). Leave empty to use only the
-# module-managed SG.
+# rule. That SG is always attached and cannot be replaced.
+#
+# There are two ways to attach ADDITIONAL security groups on top of it. Both
+# are additive and are merged with the module-managed SG:
+#
+#   1. ec2_security_group_ids (below) — applied to EVERY node. PREFERRED,
+#      because WSFC requires symmetric connectivity between all replicas.
+#
+#   2. instances_data_map[*].vpc_security_group_ids — applied to a single node.
+#      Use sparingly: asymmetric SGs between replicas cause reachability
+#      failures that surface as an AG stuck in "Not Synchronizing".
+# CIDRs the host-level Windows Firewall on each node accepts inbound traffic
+# from. The firewall is left ENABLED with scoped rules rather than disabled, so
+# it remains a second layer behind the security group.
+#
+# "<vpc_cidr>" resolves to the primary VPC CIDR at apply time, the same
+# placeholder convention used by the module's security_group_rules.
+#
+# Cross-region DAG: the DR node lives in a different VPC, so add the peer VPC
+# CIDR here (and the primary CIDR on the DR side) or the mirroring endpoint
+# traffic will be dropped by the host firewall.
+variable "firewall_allowed_cidrs" {
+  description = "CIDRs allowed inbound by the per-node Windows Firewall rules. \"<vpc_cidr>\" means the primary VPC CIDR."
+  type        = list(string)
+  default     = ["<vpc_cidr>"]
+}
+
 variable "ec2_security_group_ids" {
-  description = "Optional additional security group ID to attach alongside the module-managed AOAG SG (empty = module-managed only)"
+  description = "Optional additional security group ID applied to every AOAG node, alongside the module-managed SG (empty = module-managed only). For per-node SGs use instances_data_map[*].vpc_security_group_ids."
   type        = string
   default     = ""
 }
@@ -267,6 +328,21 @@ variable "run_ssm_associations" {
   description = "Run SSM associations for configuration"
   type        = bool
   default     = true
+}
+
+variable "run_failover_test" {
+  description = <<-EOT
+    Run the post-build AG failover/failback validation automation. Opt-in, because
+    it is destructive: it fails the AG over to a secondary and back, and when
+    dag_name is set it also demotes the primary site and promotes DR.
+
+    Leave false for a normal deployment. Set true only when you want the failover
+    path exercised and can tolerate the cluster changing roles - and see the
+    recovery note in the README, because if the DAG failback step is interrupted
+    the DAG can be left without a primary.
+  EOT
+  type        = bool
+  default     = false
 }
 
 ###############################################################################

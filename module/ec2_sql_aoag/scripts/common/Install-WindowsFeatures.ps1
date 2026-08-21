@@ -44,11 +44,17 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # Disable Windows Firewall
+    # Windows Firewall
     # -------------------------------------------------------------------------
-    Write-Host 'Disabling Windows Firewall...'
-    Get-NetFirewallProfile | Set-NetFirewallProfile -Enabled False
-    Write-Host 'Firewall disabled.'
+    # Deliberately left ENABLED. Scoped inbound rules for the AOAG/WSFC port set
+    # are created later in the node_common workflow by the ConfigureAOAGFirewall
+    # step, which runs Configure-AOAGFirewall.ps1 with the allowed CIDRs.
+    #
+    # Installing Failover-Clustering above also enables Windows' built-in
+    # "Failover Clusters" rule group, so core cluster traffic is permitted from
+    # this point on.
+    Write-Host 'Leaving Windows Firewall enabled; scoped AOAG rules are applied by Configure-AOAGFirewall.ps1.'
+    Get-NetFirewallProfile | Select-Object Name, Enabled | Format-Table -AutoSize | Out-String | Write-Host
 
     # -------------------------------------------------------------------------
     # PowerShell Modules - NuGet provider + SqlServer module
@@ -65,7 +71,11 @@ try {
             Write-Host "NuGet provider already available: v$($nuget.Version)"
             $hasNuGet = $true
         } else {
-            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction Stop | Out-Null
+            # Version pinned for the same reason as the SqlServer module below: -MinimumVersion
+            # resolves to whatever the gallery serves at deploy time, including a future
+            # compromised release. This provider bootstraps the module install, so it needs
+            # the same supply-chain treatment.
+            Install-PackageProvider -Name NuGet -RequiredVersion 2.8.5.208 -Force -ErrorAction Stop | Out-Null
             $hasNuGet = $true
             Write-Host 'NuGet provider installed.'
         }
@@ -83,7 +93,11 @@ try {
     } elseif ($hasNuGet) {
         Write-Host 'Installing SqlServer module from PSGallery...'
         try {
-            Install-Module -Name SqlServer -AllowClobber -Force -ErrorAction Stop
+            # Version pinned deliberately. An unpinned Install-Module adopts
+            # whatever PSGallery serves at deploy time, so deployments are not
+            # reproducible and a future compromised release would be picked up
+            # automatically. Bump this after testing a newer version.
+            Install-Module -Name SqlServer -RequiredVersion 22.3.0 -AllowClobber -Force -ErrorAction Stop
             $sqlMod = Get-Module -Name SqlServer -ListAvailable |
                 Sort-Object Version -Descending | Select-Object -First 1
             Write-Host "SqlServer module installed: v$($sqlMod.Version)"

@@ -234,6 +234,18 @@ try {
         # Quick connectivity test before cmdlet
         Write-Host "Testing SQL connectivity to: $SqlInstance"
         try {
+            # SECURITY NOTE: TrustServerCertificate = $true below disables TLS
+            # certificate validation - the connection is still encrypted, but the
+            # client accepts any certificate the server presents, so an attacker
+            # on the network path could intercept or modify SQL traffic without
+            # detection.
+            #
+            # It is set here because SQL Server presents a self-signed certificate
+            # until one is provisioned, which is the case during this bootstrap.
+            # It is NOT appropriate for production: install a CA-issued
+            # certificate on each SQL Server instance, then remove this block so
+            # validation applies.
+            # See: https://learn.microsoft.com/sql/database-engine/configure-windows/configure-sql-server-encryption
             $trustParam = @{}
             $cmdInfo2 = Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue
             if ($cmdInfo2 -and $cmdInfo2.Parameters.ContainsKey('TrustServerCertificate')) {

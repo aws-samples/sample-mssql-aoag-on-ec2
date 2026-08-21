@@ -81,13 +81,19 @@ sync_replica_count = 1
 #     user_data         — (string) Custom EC2 user data script. Leave "" to use
 #                         the module's default initialization. Override only for
 #                         advanced customization.
-#     vpc_security_group_ids — (list of strings) Security group IDs attached to
-#                              the instance ENI. Must allow WSFC (TCP 1433, 5022,
-#                              135, 3343, UDP 3343), SMB (445), WinRM (5985-5986),
-#                              HTTPS (443), and ICMP between all cluster nodes.
-#     private_ips_count — (number) Number of secondary private IPs to allocate on
-#                         the ENI. Set to 1 for the AG listener IP (WSFC uses the
-#                         secondary IP for the listener VNN).
+#     vpc_security_group_ids — (list of strings, optional, default: [])
+#                              ADDITIONAL security group IDs for THIS node only,
+#                              merged on top of the module-managed AOAG SG. You do
+#                              NOT need to list WSFC/SMB/mirroring ports here — the
+#                              module-managed SG already creates all of them.
+#                              Prefer the cluster-wide ec2_security_group_ids
+#                              instead: WSFC requires symmetric connectivity
+#                              between replicas, and per-node SG differences cause
+#                              an AG stuck in "Not Synchronizing".
+#     private_ips_count — (number, optional, default: 2, minimum: 2) Secondary
+#                         private IPs on the ENI. Two are required: one for the
+#                         WSFC Cluster Name Object (CNO) and one for the AG
+#                         listener VNN. Values below 2 are rejected at plan time.
 #
 #     root_block_device — (object) OS volume configuration:
 #       volume_size — (number) Size in GiB. Minimum 100 recommended for Windows+SQL.
@@ -128,7 +134,7 @@ instances_data_map = {
     key_name               = "your-key-pair"
     user_data              = ""
     vpc_security_group_ids = ["sg-0123456789abcdef0"]
-    private_ips_count      = 1
+    private_ips_count      = 2
 
     root_block_device = {
       volume_size = 100
@@ -186,7 +192,7 @@ instances_data_map = {
     key_name               = "your-key-pair"
     user_data              = ""
     vpc_security_group_ids = ["sg-0123456789abcdef0"]
-    private_ips_count      = 1
+    private_ips_count      = 2
 
     root_block_device = {
       volume_size = 100
@@ -254,10 +260,13 @@ domain_name = "YOURDOMAIN.COM"
 domain_join_user = "domainadmin"
 
 # domain_secret (string, REQUIRED, no default)
-#   Name (not ARN) of the AWS Secrets Manager secret in the PRIMARY region
-#   that stores the domain_join_user password. The secret value should be a
-#   plain-text string containing just the password. The IAM role attached to
-#   EC2 instances is granted GetSecretValue on this secret.
+#   Name (not ARN) of the Secrets Manager secret in the PRIMARY region holding the
+#   domain-join credentials. The EC2 IAM role is granted GetSecretValue on it.
+#
+#   Value MUST be JSON, not a bare password:
+#       {"username":"domainadmin","password":"..."}
+#
+#   domain_join_user above must match the username in this secret.
 domain_secret = "your-domain-secret-name"
 
 # dns_ips (list of strings, REQUIRED, no default)
@@ -312,9 +321,10 @@ SQLVersion = "2022"
 sql_service_account = "sqlsvcaccount"
 
 # sql_service_account_key (string, REQUIRED, no default)
-#   Name (not ARN) of the Secrets Manager secret storing the sql_service_account
-#   password. The secret value should be a plain-text string. Retrieved during
-#   SQL Server installation to configure the service account credentials.
+#   Name (not ARN) of the Secrets Manager secret with the SQL service account
+#   credentials. Value MUST be JSON: {"username":"sqlsvcaccount","password":"..."}
+#   SQL Server runs as <NETBIOS>\<username> from this secret, so use a dedicated
+#   service account rather than the domain admin.
 sql_service_account_key = "your-sql-service-account-secret"
 
 # SQLConfig (map of objects, REQUIRED, no default)
@@ -577,7 +587,7 @@ nvme_drive_letter = "T"
 #     key_name               = "your-dr-key-pair"
 #     user_data              = ""
 #     vpc_security_group_ids = ["sg-0123456789abcdef1"]
-#     private_ips_count      = 1
+#     private_ips_count      = 2
 #     root_block_device = {
 #       volume_size = 100
 #       volume_type = "gp3"

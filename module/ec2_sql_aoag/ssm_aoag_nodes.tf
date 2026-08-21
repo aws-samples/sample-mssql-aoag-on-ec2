@@ -26,6 +26,13 @@ resource "aws_ssm_association" "aoag_node_common" {
     WindowsADMembers      = var.windows_ad_members
     WindowsLocalGroup     = var.windows_local_group
     HostName              = each.key
+
+    # Host firewall scope. "<vpc_cidr>" is substituted with the primary VPC CIDR,
+    # the same placeholder convention used by var.security_group_rules.
+    AllowedFirewallCidrs = join(",", [
+      for c in var.firewall_allowed_cidrs : c == "<vpc_cidr>" ? data.aws_vpc.this.cidr_block : c
+    ])
+    SQLListenerPort = tostring(local.listener_port)
     EBSDriveConfig = jsonencode([for vol in each.value.ebs_block_device : {
       volume_size  = vol.volume_size
       drive_letter = vol.drive_letter
@@ -200,7 +207,11 @@ resource "aws_ssm_association" "aoag_create_dag" {
 # When DAG is configured, also tests DAG failover/failback to DR
 ###############################################################################
 resource "aws_ssm_association" "aoag_test_failover" {
-  for_each                         = var.run_ssm_associations && var.is_ha && local.node_count > 1 ? { (local.primary_node_key) = local.primary_node_key } : {}
+  # Opt-in. This automation performs a real AG failover and failback, and when a
+  # DAG is configured it also demotes the primary site and promotes DR. That is a
+  # destructive sequence against a freshly built cluster, so it only runs when
+  # explicitly requested via run_failover_test.
+  for_each                         = var.run_ssm_associations && var.run_failover_test && var.is_ha && local.node_count > 1 ? { (local.primary_node_key) = local.primary_node_key } : {}
   provider                         = aws.site
   name                             = var.ssm_doc_test_failover
   association_name                 = "${var.namespace}-aoag-${each.key}-test-failover"
