@@ -178,6 +178,44 @@ resource "aws_ssm_document" "proserve_aoag_dr_create_ag" {
         onFailure = "step:sleepend"
       },
       {
+        # See proserve_aoag_create_availability_group.tf for the rationale: the
+        # DR-site listener VCO is created by the DR cluster's own CNO, so it hits
+        # the same "Access is denied" (SQL Msg 19471 / event 1194) in any domain
+        # that restricts computer-object creation. Prestage it the same way.
+        name   = "PrestageDRListenerVCO"
+        action = "aws:runCommand"
+        inputs = {
+          DocumentName = "AWS-RunPowerShellScript"
+          InstanceIds  = ["{{ InstanceId }}"]
+          Parameters = {
+            commands = [
+              "$ErrorActionPreference = 'Stop'",
+              "try {",
+              "  $secret = ConvertFrom-Json (Get-SECSecretValue -SecretId {{ DomainAdminSecretName }} -ErrorAction Stop).SecretString",
+              "  $domain = '{{ DomainDNSName }}'",
+              "  $netbios = ($domain -split '\\.')[0].ToUpper()",
+              "  $user = $netbios + '\\' + '{{ DomainAdminUser }}'",
+              "  $pass = ConvertTo-SecureString $secret.password -AsPlainText -Force",
+              "  $cred = New-Object PSCredential($user, $pass)",
+              "  $s = New-PSSession -ComputerName $env:COMPUTERNAME -Authentication Credssp -Credential $cred -ErrorAction Stop",
+              "  Invoke-Command -Session $s -ErrorAction Stop -ScriptBlock {",
+              "    $ErrorActionPreference = 'Stop'",
+              "    & C:\\aoag\\scripts\\ag\\Prestage-AGListenerVCO.ps1 -ListenerName '{{ ListenerName }}'",
+              "    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw ('Script exited with code ' + $LASTEXITCODE) }",
+              "  }",
+              "  Remove-PSSession $s -ErrorAction SilentlyContinue",
+              "} catch {",
+              "  Write-Host ('ERROR: ' + $_.Exception.Message)",
+              "  Remove-PSSession $s -ErrorAction SilentlyContinue",
+              "  exit 1",
+              "}"
+            ]
+            executionTimeout = ["600"]
+          }
+        }
+        onFailure = "step:sleepend"
+      },
+      {
         name   = "CreateDRAGListener"
         action = "aws:runCommand"
         inputs = {

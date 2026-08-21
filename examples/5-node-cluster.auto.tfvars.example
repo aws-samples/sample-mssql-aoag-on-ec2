@@ -30,7 +30,7 @@ instances_data_map = {
     availability_zone = "us-east-1a"
     subnet_id         = "subnet-0123456789abcdef0"
     key_name          = "my-key-pair"
-    private_ips_count = 1
+    private_ips_count = 2
     root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
     ebs_block_device = [
       { volume_size = 200, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
@@ -47,7 +47,7 @@ instances_data_map = {
     availability_zone = "us-east-1b"
     subnet_id         = "subnet-0fedcba9876543210"
     key_name          = "my-key-pair"
-    private_ips_count = 1
+    private_ips_count = 2
     root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
     ebs_block_device = [
       { volume_size = 200, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
@@ -64,7 +64,7 @@ instances_data_map = {
     availability_zone = "us-east-1a"
     subnet_id         = "subnet-0123456789abcdef0"
     key_name          = "my-key-pair"
-    private_ips_count = 1
+    private_ips_count = 2
     root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
     ebs_block_device = [
       { volume_size = 200, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
@@ -81,7 +81,7 @@ instances_data_map = {
     availability_zone = "us-east-1b"
     subnet_id         = "subnet-0fedcba9876543210"
     key_name          = "my-key-pair"
-    private_ips_count = 1
+    private_ips_count = 2
     root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
     ebs_block_device = [
       { volume_size = 200, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
@@ -98,7 +98,7 @@ instances_data_map = {
     availability_zone = "us-east-1a"
     subnet_id         = "subnet-0123456789abcdef0"
     key_name          = "my-key-pair"
-    private_ips_count = 1
+    private_ips_count = 2
     root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
     ebs_block_device = [
       { volume_size = 200, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf" },
@@ -153,9 +153,11 @@ SQLConfig = {
 # Security
 ec2_security_group_ids = "sg-0123456789abcdef0"
 
-# S3
-bucket_name        = "123456789012-sql-aoag-automation"
-sql_s3_bucket_name = "123456789012-sql-aoag-automation"
+# S3 - bucket must be one YOU own; its contents are executed as admin on every
+# node, and S3 bucket names are a single global namespace, so never point this at
+# a name you have not registered yourself.
+bucket_name        = "<your-account-id>-sql-aoag-automation"
+sql_s3_bucket_name = "<your-account-id>-sql-aoag-automation"
 
 # Deployment Flags
 is_ha                = true

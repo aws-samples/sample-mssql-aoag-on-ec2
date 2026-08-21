@@ -41,6 +41,16 @@ try {
     if ($sqlMod) { Import-Module SqlServer -Force }
     else { Import-Module SQLPS -DisableNameChecking -ErrorAction SilentlyContinue }
 
+    # SECURITY NOTE: TrustServerCertificate = $true disables TLS certificate
+    # validation on this connection - the client accepts any certificate the
+    # server presents, so an attacker on the network path could intercept or
+    # modify SQL traffic without detection.
+    #
+    # It is set here because SQL Server presents a self-signed certificate until
+    # one is provisioned, which is the case during this bootstrap. It is NOT
+    # appropriate for production: install a CA-issued certificate on each SQL
+    # Server instance, then remove this block so validation applies.
+    # See: https://learn.microsoft.com/sql/database-engine/configure-windows/configure-sql-server-encryption
     $sqlParams = @{}
     $cmdInfo = Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue
     if ($cmdInfo -and $cmdInfo.Parameters.ContainsKey('TrustServerCertificate')) {

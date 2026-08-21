@@ -96,8 +96,9 @@ All EBS volumes encrypted with customer-managed KMS keys. Secrets Manager for al
 
 ### 1. Prerequisites
 
-- Active Directory (AD) domain with DNS
+- Active Directory (AD) domain with DNS. Instances must resolve the domain at the VPC level — via the DHCP option set or a Route 53 Resolver forwarding rule. The automation sets the DNS suffix search list, not the NIC's DNS servers.
 - An AD service account with permissions to join computers to the domain (used as `domain_join_user`)
+- The cluster's CNO must be able to create computer objects, or the AG listener will fail — see [Active Directory permissions and the AG listener](#active-directory-permissions-and-the-ag-listener)
 - A SQL Server service account in AD (used as `sql_service_account`) for running SQL Server services
 - Virtual Private Cloud (VPC) with subnets in multiple Availability Zones
 - Cross-region network connectivity via AWS Transit Gateway (TGW) or VPC Peering if deploying DR with DAG
@@ -105,7 +106,7 @@ All EBS volumes encrypted with customer-managed KMS keys. Secrets Manager for al
   - **License-included AMI**: AWS-provided Windows Server AMI with SQL Server Enterprise pre-installed. SQL binaries are already on the AMI. Use the latest AMI ID available in your deployment region (search for "Windows_Server-2022-English-Full-SQL_2022_Enterprise" in the EC2 console or via `aws ec2 describe-images`).
   - **BYOL AMI**: Plain Windows Server AMI (no SQL Server). Upload your SQL Server setup media zip to the S3 bucket under the `aoag/` prefix (e.g., `aoag/SQL2025-Enterprise.zip`). The SSM automation auto-detects and extracts it during provisioning.
 - S3 bucket for automation scripts (uploaded automatically by Terraform). The bucket must already exist and `bucket_region` must match the bucket's actual AWS region.
-- Secrets Manager secrets for: domain admin password and SQL service account password. Secret values must be **plain-text strings** (not JSON).
+- Secrets Manager secrets for the domain-join and SQL service accounts. Values must be JSON — `{"username":"...","password":"..."}` — not a bare password string. `domain_join_user` must match the `username` in the secret.
 - The module **creates and manages** the security group required for the cluster. You don't need to pre-create one. The module-managed SG includes all inbound rules for WSFC, SMB, the database mirroring endpoint, RPC, and dynamic ports, and an all-outbound egress rule so each EC2 instance can reach AWS service endpoints (Systems Manager, S3, KMS, Secrets Manager) and Active Directory. To layer additional rules (for example, RDP from a bastion), pass an extra security group ID via `ec2_security_group_ids` and it will be attached alongside the module-managed SG. The full rule set the module installs:
 
   | Port | Protocol | Purpose |
@@ -161,7 +162,65 @@ Monitor SSM Automation executions in the AWS Console under Systems Manager > Aut
 
 Once complete, connect to the AG listener endpoint on the configured TCP port.
 
-> **Note:** Each EC2 node is provisioned with a single ENI containing 3 private IP addresses: the primary IP (node identity), a secondary IP for the WSFC Cluster Name Object (CNO), and a secondary IP for the AG Listener. These are allocated automatically — the `private_ips_count` value in `instances_data_map` is informational only; the module always allocates 2 secondary IPs.
+> **Note:** Each EC2 node is provisioned with a single ENI containing at least 3 private IP addresses: the primary IP (node identity), a secondary IP for the WSFC Cluster Name Object (CNO), and a secondary IP for the AG Listener. The number of secondary IPs comes from `private_ips_count` in `instances_data_map` and defaults to 2. Values below 2 are rejected at plan time, because the CNO and the AG Listener are taken from secondary IP index 0 and index 1 respectively — with only one secondary IP they would collide on the same address.
+
+### Active Directory permissions and the AG listener
+
+The AG listener's computer object (VCO) is created by the **cluster identity**
+(the CNO computer account, e.g. `MYCLUSTER$`) — not by the credentials the module
+runs as. If the CNO can't create computer objects, listener creation fails with
+`Msg 19471` and FailoverClustering **event 1194** (`Access is denied`) in the
+node's System log. Everything before it succeeds, so it looks unrelated to AD.
+
+Unhardened domains hide this: `Authenticated Users` holds *Add workstations to a
+domain* and the CNO self-services the object. It surfaces on AWS Managed
+Microsoft AD, and on any domain with `ms-DS-MachineAccountQuota = 0`.
+
+The `create_availability_group` document handles it with a `PrestageListenerVCO`
+step ([`Prestage-AGListenerVCO.ps1`](module/ec2_sql_aoag/scripts/ag/Prestage-AGListenerVCO.ps1)):
+it creates the VCO as a disabled computer object next to the CNO and grants the
+CNO Full Control on it, so no OU-level delegation is needed. The step is
+idempotent and adopts an existing VCO.
+
+Alternatively, grant the CNO the permission directly (per-cluster, since the ACE
+is bound to its SID):
+
+```powershell
+dsacls "OU=Computers,OU=example,DC=example,DC=com" /G "EXAMPLE\MYCLUSTER$:CC;computer"
+```
+
+See [Prestage cluster computer objects in AD DS](https://learn.microsoft.com/en-us/windows-server/failover-clustering/prestage-cluster-adds).
+
+### Redeploying with the same names
+
+`terraform destroy` does not remove AD objects or DNS records. Node computer
+accounts, the CNO, and the listener VCO all survive, along with their A records.
+Since hostnames come from the `instances_data_map` keys, a redeploy reuses them
+and fails in one of two ways:
+
+- **Domain join** fails with `The account already exists` (stale computer account).
+- **Cluster creation** fails with `An enabled computer account (object) for
+  '<name>' was found`, or the node join fails with `Check the spelling of the
+  cluster name. Otherwise, there might be a problem with your network` — the
+  latter is usually a stale **DNS A record** pointing the cluster name at an IP
+  from the previous deployment, not a network fault.
+
+Delete the stale objects before redeploying, or use new names. Note the CNO is
+named after `namespace`, not `clustername`, and the DR cluster is
+`<namespace>-dr`. So for `namespace = "aoag01"` the objects to remove are:
+
+```powershell
+# computer accounts: nodes, CNOs, listener VCOs
+'AWSAOAG01A','AWSAOAG01B','aoag01','aoag01-dr','AGLIST01','AGLIST01DR' |
+    ForEach-Object { Remove-ADComputer -Identity $_ -Confirm:$false -ErrorAction SilentlyContinue }
+
+# matching DNS records (stale A records cause the "spelling of the cluster name" error)
+'AWSAOAG01A','AWSAOAG01B','aoag01','aoag01-dr','AGLIST01','AGLIST01DR' |
+    ForEach-Object { Remove-DnsServerResourceRecord -ZoneName '<domain>' -RRType A -Name $_ -Force -ErrorAction SilentlyContinue }
+```
+
+A cluster CNO carries deletion protection, so `Remove-ADObject -Recursive` can
+return `Access is denied`; `Remove-ADComputer` handles it.
 
 ## 💻 Usage
 
@@ -236,7 +295,7 @@ instances_data_map = {
     key_name               = "your-key-pair"
     user_data              = ""
     vpc_security_group_ids = ["sg-0123456789abcdef0"]
-    private_ips_count      = 1
+    private_ips_count      = 2
     root_block_device = { volume_size = 100, volume_type = "gp3", volume_iops = 3000 }
     ebs_block_device = [
       { volume_size = 100, volume_type = "gp3", volume_iops = 3000, device_name = "xvdf",
@@ -307,6 +366,8 @@ See `example.auto.tfvars` for the complete configuration with all available opti
 | `dag_name` | DAG name (empty = no DAG) | `""` |
 | `SQLVersion` | SQL Server version (`"2019"`, `"2022"`, `"2025"`) | `"2022"` |
 | `run_ssm_associations` | Trigger SSM automation | `true` |
+| `run_failover_test` | Run the destructive AG/DAG failover validation after build. Opt-in | `false` |
+| `firewall_allowed_cidrs` | CIDRs allowed inbound by the per-node Windows Firewall rules. `"<vpc_cidr>"` resolves to the local VPC CIDR | `["<vpc_cidr>"]` |
 
 See `variables.tf` for the full list of inputs.
 
@@ -358,6 +419,50 @@ For DAG failover between primary and DR sites:
 2. Promote DR forwarder: `ALTER AVAILABILITY GROUP [DAG] FORCE_FAILOVER_ALLOW_DATA_LOSS;`
 
 Failback reverses the process. The `test_failover` SSM document automates this end-to-end including cross-region SSM execution.
+
+#### Running the automated failover test
+
+The `test_failover` automation is **opt-in** (`run_failover_test = true`, default `false`)
+because it is destructive: it fails the AG over to a secondary and back, and when
+`dag_name` is set it also demotes the primary site and promotes DR.
+
+#### Recovering an interrupted DAG failback
+
+The failback sequence demotes DR (`SET (ROLE = SECONDARY)`) and then promotes the
+primary site (`FORCE_FAILOVER_ALLOW_DATA_LOSS`). Those are two separate steps, so if
+the automation stops between them — for example an SSM Automation
+`Internal Server Error` on the cross-region step — **both sides are left as
+SECONDARY and the DAG has no primary**. The AG inside each site stays healthy;
+it is the distributed group that is headless.
+
+Symptoms, queried on the primary replica:
+
+```sql
+SELECT ag.name, ag.is_distributed, ar.replica_server_name,
+       ars.role_desc, ars.connected_state_desc, ars.synchronization_health_desc
+FROM sys.availability_groups ag
+JOIN sys.availability_replicas ar ON ag.group_id = ar.group_id
+LEFT JOIN sys.dm_hadr_availability_replica_states ars ON ars.replica_id = ar.replica_id
+WHERE ag.is_distributed = 1;
+```
+
+`role_desc = SECONDARY` on both rows, usually with `connected_state_desc = DISCONNECTED`.
+
+To recover, on the **primary site** replica:
+
+```sql
+ALTER AVAILABILITY GROUP [<dag_name>] FORCE_FAILOVER_ALLOW_DATA_LOSS;
+```
+
+Then confirm the role, and resume any database left suspended by the forced failover
+(run on each secondary replica):
+
+```sql
+ALTER DATABASE [<db>] SET HADR RESUME;
+```
+
+After a forced failback the DR replica may need to reseed before the DAG reports
+`HEALTHY` again; automatic seeding handles this, but it is not instantaneous.
 
 ### SSMS Offline Install
 
@@ -524,10 +629,19 @@ terraform destroy
 
 If DR with DAG is deployed, fail over the DAG back to primary and remove the DAG before destroying.
 
+`terraform destroy` leaves the AD objects behind — one computer account per node, the CNO (named after `namespace`), and the listener VCO. Delete them, or use new names next time. See [Redeploying with the same names](#redeploying-with-the-same-names).
+
 **Troubleshooting**
 
 | Issue | Solution |
 |---|---|
+| `Msg 19471` — WSFC could not bring the Network Name resource online, listener creation fails | The CNO cannot create the listener's computer object. Check FailoverClustering **event 1194** in the node's System log to confirm `Access is denied`. See [Active Directory permissions and the AG listener](#active-directory-permissions-and-the-ag-listener) |
+| Domain join fails: `A computer account named '<host>' already exists` (or `renaming it to '<host>' failed ... The account already exists`) | A computer account with that name survives from an earlier deployment — `terraform destroy` doesn't remove AD objects. Delete the stale object or use a new hostname. `Domain-Join-Rename.ps1` checks for this before joining and reports the object's DN and last logon |
+| Domain join fails: `The specified domain either does not exist or could not be contacted` | Instances cannot resolve the AD domain. Point the VPC DHCP option set at the AD DNS servers, or add a Route 53 Resolver forwarding rule for the domain and associate it with the VPC |
+| `Failed to retrieve secret after 5 attempts` | The Secrets Manager value is not JSON. It must be `{"username":"...","password":"..."}` — see [Prerequisites](#1-prerequisites) |
+| Secondary node logs `Specified cluster '<name>' does not resolve yet` ×10 before joining | The cluster is created from `namespace` while the join step uses `clustername`. Harmless — the joiner falls back to the primary's hostname — but setting `clustername` equal to `namespace` skips the wasted retries |
+| `InstallWindowsFeatures` fails with `A system shutdown is in progress. Error: 0x8007045b` | Something rebooted the node mid-step, commonly a patch-baseline SSM association in a managed account. Re-run the `node_common` association |
+| `Server.InsufficientInstanceCapacity` on instance launch | No capacity for that instance type in that AZ. Choose another NVMe-capable (`d`-suffix) type, or a different AZ |
 | T: drive not created / SQL install fails on TempDB path | Your instance type has no NVMe instance store. Use a `d`-suffix type (e.g., `m5d`, `r6id`) or set `use_nvme_tempdb = false` |
 | DAG relationships block destroy | Fail over DAG to primary and remove DAG before `terraform destroy` |
 | DR `CompleteFailoverCluster` fails | Tear down and redeploy fresh |
@@ -538,6 +652,37 @@ If DR with DAG is deployed, fail over the DAG back to primary and remove the DAG
 See [CONTRIBUTING](CONTRIBUTING.md) for more information.
 
 ## 🔒️ Security
+
+### Host firewall
+
+The Windows Firewall stays **enabled** on every node. `Configure-AOAGFirewall.ps1`
+creates scoped inbound rules instead, so the host remains a second layer behind
+the security group:
+
+| Rule | Protocol | Ports |
+|---|---|---|
+| `AOAG-Cluster-TCP` | TCP | mirroring endpoint, `3343`, `135`, `445`, `49152-65535` |
+| `AOAG-Cluster-UDP` | UDP | `3343`, `137`, `138`, `49152-65535` |
+| `AOAG-Cluster-ICMP` | ICMPv4 | WSFC heartbeat |
+| `AOAG-SQL-TCP` | TCP | SQL / AG listener port |
+| `AOAG-SQL-Browser-UDP` | UDP | `1434` (named-instance lookup) |
+| `AOAG-WinRM-TCP` | TCP | `5985`, `5986` |
+
+Sources come from `firewall_allowed_cidrs`, which defaults to the local VPC CIDR.
+`0.0.0.0/0` is rejected — an any-source rule is equivalent to switching the
+firewall off.
+
+**Cross-region DAG:** the DR node is in a different VPC, so its address is outside
+the local VPC CIDR. Pass both CIDRs or the mirroring traffic is dropped:
+
+```hcl
+firewall_allowed_cidrs = ["<vpc_cidr>", "10.1.0.0/16"]   # local + peer (DR) VPC
+```
+
+The same applies to the module-managed security groups: `security_group_rules`
+resolves `<vpc_cidr>` to the local VPC only, so a cross-region DAG also needs the
+peer CIDR added there (or an additional SG via `ec2_security_group_ids`).
+Otherwise the mirroring port is open on the host but still blocked at the SG.
 
 See [SECURITY](SECURITY.md) for more information. To report a vulnerability, see [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications).
 

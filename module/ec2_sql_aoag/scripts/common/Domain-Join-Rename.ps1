@@ -65,6 +65,80 @@ try {
     $currentHostName = $env:COMPUTERNAME
     $alreadyInDomain = (Get-WmiObject Win32_ComputerSystem).Domain.ToLower() -eq $DomainDNSName.ToLower()
 
+    ###########################################################################
+    # Pre-flight: is the target computer name already taken in AD?
+    #
+    # Add-Computer -NewName joins under the instance's current EC2 name and then
+    # renames, and the rename also renames the AD computer object. sAMAccountName
+    # must be unique, so if an object called <HostName> already exists - typically
+    # an orphan from an earlier deployment, since terraform destroy does not remove
+    # AD objects - the rename is refused with "The account already exists".
+    #
+    # That is a directory uniqueness constraint, not a permissions problem: domain
+    # admin credentials do not help, and there is no override flag.
+    #
+    # Without this check the failure is slow and misleading. The first attempt
+    # reports a *successful join* with a failed rename, which does not match the
+    # 'already in that domain' case the retry loop handles, so it sleeps 60s. The
+    # second attempt then matches, calls Rename-Computer, fails identically, and
+    # because that call uses -ErrorAction Stop it throws out of the catch block and
+    # kills the script. Re-running does not recover: the machine is now in the
+    # domain, so it takes the rename path at the top and throws immediately.
+    #
+    # Queried over LDAP with System.DirectoryServices rather than Get-ADComputer,
+    # so this works from a workgroup machine without the RSAT AD module.
+    #
+    # Deliberately fails OPEN: if the lookup itself cannot run we warn and continue,
+    # so a diagnostic aid can never become a new failure mode.
+    ###########################################################################
+    if ($currentHostName -ne $HostName) {
+        Write-Host "Pre-flight: checking whether a computer account named '$HostName' already exists..."
+
+        # Collect the collision detail here rather than throwing inside the try,
+        # so the catch below only ever sees genuine lookup failures.
+        $nameCollision = $null
+
+        try {
+            $ldapRoot = New-Object System.DirectoryServices.DirectoryEntry(
+                "LDAP://$DomainDNSName",
+                $AdminDomainAccountName,
+                $AdminSecretObject.password)
+
+            $searcher = New-Object System.DirectoryServices.DirectorySearcher($ldapRoot)
+            $searcher.Filter = "(&(objectClass=computer)(sAMAccountName=$HostName`$))"
+            foreach ($p in 'distinguishedName', 'whenCreated', 'lastLogonTimestamp') {
+                [void]$searcher.PropertiesToLoad.Add($p)
+            }
+            $hit = $searcher.FindOne()
+
+            if ($hit) {
+                $dn = $hit.Properties['distinguishedname'][0]
+                $created = if ($hit.Properties['whencreated'].Count) { $hit.Properties['whencreated'][0] } else { 'unknown' }
+                $lastLogon = 'never'
+                if ($hit.Properties['lastlogontimestamp'].Count) {
+                    $raw = [int64]$hit.Properties['lastlogontimestamp'][0]
+                    if ($raw -gt 0) { $lastLogon = [DateTime]::FromFileTimeUtc($raw).ToString('u') }
+                }
+                $nameCollision = "DN: $dn; created: $created; lastLogon: $lastLogon"
+            }
+            else {
+                Write-Host "Pre-flight OK: no existing computer account named '$HostName'."
+            }
+        }
+        catch {
+            Write-Host "WARNING: pre-flight name check could not run ($($_.Exception.Message)). Continuing to domain join."
+        }
+
+        if ($nameCollision) {
+            throw ("A computer account named '$HostName' already exists in $DomainDNSName ($nameCollision). " +
+                "Add-Computer cannot rename this node onto an existing account: sAMAccountName must be " +
+                "unique, and domain admin rights do not override it. If it is an orphan from a previous " +
+                "deployment, delete it from AD and re-run this step; otherwise choose a different node " +
+                "name (the instances_data_map key). Note that terraform destroy leaves node computer " +
+                "accounts, the cluster CNO and the listener VCO in the directory.")
+        }
+    }
+
     if ($alreadyInDomain) {
         Write-Host "Server already in the domain $DomainDNSName"
         if ($currentHostName -ne $HostName) {

@@ -27,7 +27,7 @@ PowerShell session on the target node.
 | DR AG Name | AG849-DR |
 | DR Listener | AGLIST849DR:1433 |
 | DAG Name | DAG849 |
-| S3 Bucket | 123456789012-sql-aoag-automation (us-east-1) |
+| S3 Bucket | `<your-account-id>-sql-aoag-automation` (us-east-1) — you create this; see Step 1.1 |
 | SQL Service Account | MYEXDOM\awssqlsvc01 |
 | Endpoint Port | 5022 |
 
@@ -42,16 +42,69 @@ PowerShell session on the target node.
 
 ---
 
+## TLS and SQL Server connections
+
+> **⚠️ The `Invoke-Sqlcmd` calls throughout this guide set
+> `TrustServerCertificate = $true`, which disables TLS certificate validation.**
+>
+> The connection is still encrypted, but the client accepts **any** certificate
+> the server presents and performs no identity check. An attacker positioned on
+> the network path between nodes can therefore intercept or modify SQL traffic
+> without detection — including the credentials used when creating database
+> mirroring endpoints, and the data replicated between replicas.
+>
+> It is set here because SQL Server generates a **self-signed** certificate at
+> install time, and that is all a node has during this bootstrap procedure.
+> Enabling validation before a trusted certificate exists would cause every
+> connection below to fail.
+>
+> **Before using this deployment for anything beyond a lab, do all of the
+> following:**
+>
+> 1. Install a CA-issued certificate on each SQL Server instance. The subject
+>    alternative names must cover both the node's own name and the AG listener
+>    name, because clients connect through the listener.
+> 2. Configure SQL Server to use it, and enable `ForceEncryption`.
+> 3. Ensure every client trusts the issuing CA.
+> 4. Remove `TrustServerCertificate = $true` from these commands, and from the
+>    equivalent lines in `module/ec2_sql_aoag/scripts/ag/*.ps1` and
+>    `module/ssm_documents/proserve_aoag_test_failover.tf`, so that validation
+>    applies.
+>
+> Reference: [Configure SQL Server Database Engine for encrypting connections](https://learn.microsoft.com/sql/database-engine/configure-windows/configure-sql-server-encryption)
+
+---
+
 ## PHASE 1: Node Preparation (Run on ALL nodes)
 
 ### Step 1.1: Download Scripts from S3
+
+> **Prerequisite — create your own bucket first.** The scripts downloaded here are
+> executed with administrator privileges on every node, so the bucket they come
+> from is part of your trust boundary. Create a bucket **in your own account**,
+> for example `<your-account-id>-sql-aoag-automation`, and upload the contents of
+> `module/ec2_sql_aoag/scripts/` to the `aoag/` prefix.
+>
+> Substitute your bucket name in the command below. Do **not** run it with the
+> `<your-account-id>` placeholder unchanged, and do not use a bucket you do not
+> own — S3 bucket names are a single global namespace, so any name you have not
+> registered yourself may be claimed by someone else and would then serve
+> attacker-controlled PowerShell to this command.
 
 ```powershell
 New-Item -Path C:\aoag -ItemType Directory -Force | Out-Null
 New-Item -Path C:\aoag\log -ItemType Directory -Force | Out-Null
 
-# Download all scripts from S3
-Read-S3Object -BucketName '123456789012-sql-aoag-automation' -Region 'us-east-1' -KeyPrefix 'aoag' -Folder C:\aoag
+# Download all scripts from S3 - replace with YOUR bucket name
+Read-S3Object -BucketName '<your-account-id>-sql-aoag-automation' -Region 'us-east-1' -KeyPrefix 'aoag' -Folder C:\aoag
+
+# Verify integrity before executing anything. Compare these hashes against the
+# scripts you uploaded (Get-FileHash on your source copy) so that tampering in
+# transit or at rest is detected rather than silently executed.
+Get-ChildItem C:\aoag -Recurse -Filter *.ps1 |
+    Get-FileHash -Algorithm SHA256 |
+    Select-Object Hash, Path |
+    Format-Table -AutoSize
 
 # Verify key scripts exist
 Test-Path C:\aoag\scripts\common\Domain-Join-Rename.ps1
@@ -91,14 +144,43 @@ Install-WindowsFeature -Name RSAT-Clustering-Mgmt
 Install-WindowsFeature -Name RSAT-AD-PowerShell
 Install-WindowsFeature -Name NET-Framework-45-Core
 
-# Disable Windows Firewall (security via AWS Security Groups)
-Get-NetFirewallProfile | Set-NetFirewallProfile -Enabled False
+# Windows Firewall: leave it ENABLED and open only what AOAG needs, scoped to
+# your VPC CIDR. Do not disable it - the security group is the first layer, the
+# host firewall is the second, and you want both.
+#
+# Replace 10.0.0.0/16 with your VPC CIDR. For a cross-region DAG, add the peer
+# VPC CIDR too or mirroring traffic will be dropped here.
+$allowed = @('10.0.0.0/16')
+
+New-NetFirewallRule -DisplayName 'AOAG-Cluster-TCP' -Direction Inbound -Action Allow `
+    -Protocol TCP -LocalPort 5022,3343,135,445,49152-65535 -RemoteAddress $allowed
+New-NetFirewallRule -DisplayName 'AOAG-Cluster-UDP' -Direction Inbound -Action Allow `
+    -Protocol UDP -LocalPort 3343,137,138,49152-65535 -RemoteAddress $allowed
+New-NetFirewallRule -DisplayName 'AOAG-Cluster-ICMP' -Direction Inbound -Action Allow `
+    -Protocol ICMPv4 -RemoteAddress $allowed
+New-NetFirewallRule -DisplayName 'AOAG-SQL-TCP' -Direction Inbound -Action Allow `
+    -Protocol TCP -LocalPort 1433 -RemoteAddress $allowed
+# Named instances (e.g. INST01) listen on a dynamic port, so clients look the port
+# up via SQL Browser on UDP 1434. Without this rule, joining a replica fails with
+# "error: 26 - Error Locating Server/Instance Specified". The dynamic port itself
+# is covered by the 49152-65535 range above. Not needed for a default instance.
+New-NetFirewallRule -DisplayName 'AOAG-SQL-Browser-UDP' -Direction Inbound -Action Allow `
+    -Protocol UDP -LocalPort 1434 -RemoteAddress $allowed
+New-NetFirewallRule -DisplayName 'AOAG-WinRM-TCP' -Direction Inbound -Action Allow `
+    -Protocol TCP -LocalPort 5985,5986 -RemoteAddress $allowed
+
+# Confirm the firewall is on
+Get-NetFirewallProfile | Select-Object Name, Enabled
 
 # Install NuGet provider + SqlServer module
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
+Install-PackageProvider -Name NuGet -RequiredVersion 2.8.5.208 -Force   # pin to a tested version
 Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-Install-Module -Name SqlServer -AllowClobber -Force
+
+# Pin the module version. Unpinned installs are not reproducible and would
+# silently adopt whatever PSGallery serves at deploy time, including a future
+# compromised release. Bump after testing a newer version.
+Install-Module -Name SqlServer -RequiredVersion 22.3.0 -AllowClobber -Force
 
 # Verify SqlServer module
 Get-Module -Name SqlServer -ListAvailable | Select-Object Name, Version
@@ -363,6 +445,8 @@ Get-Service -Name 'SQLAgent$INST01' | Select-Object Name, Status, StartType
 
 # Test connectivity
 Import-Module SqlServer
+# SECURITY: TrustServerCertificate skips TLS certificate validation - see the
+# warning under "TLS and SQL Server connections". Remove for production.
 $sqlParams = @{ TrustServerCertificate = $true }
 Invoke-Sqlcmd -ServerInstance "$env:COMPUTERNAME\INST01" `
     -Query "SELECT @@SERVERNAME AS ServerName, @@VERSION AS Version" @sqlParams
@@ -549,6 +633,8 @@ Or manually (inside CredSSP session):
 ```powershell
 Invoke-Command -Session $s -ScriptBlock {
     Import-Module SqlServer -Force
+    # SECURITY: TrustServerCertificate skips TLS certificate validation - see the
+    # warning under "TLS and SQL Server connections". Remove for production.
     $sqlParams = @{ TrustServerCertificate = $true }
     $inst = "$env:COMPUTERNAME\INST01"
 
@@ -596,6 +682,8 @@ Or manually (inside CredSSP session):
 ```powershell
 Invoke-Command -Session $s -ScriptBlock {
     Import-Module SqlServer -Force
+    # SECURITY: TrustServerCertificate skips TLS certificate validation - see the
+    # warning under "TLS and SQL Server connections". Remove for production.
     $sqlParams = @{ TrustServerCertificate = $true }
     $inst = "$env:COMPUTERNAME\INST01"
     $sqlPath = 'SQLSERVER:\SQL\' + $env:COMPUTERNAME + '\INST01'
@@ -671,6 +759,8 @@ Or manually (inside CredSSP session):
 ```powershell
 Invoke-Command -Session $s -ScriptBlock {
     Import-Module SqlServer -Force
+    # SECURITY: TrustServerCertificate skips TLS certificate validation - see the
+    # warning under "TLS and SQL Server connections". Remove for production.
     $sqlParams = @{ TrustServerCertificate = $true }
     $localInst = "$env:COMPUTERNAME\INST01"
     $localPath = 'SQLSERVER:\SQL\' + $env:COMPUTERNAME + '\INST01'
@@ -710,6 +800,8 @@ Remove-PSSession $s
 
 ```powershell
 Import-Module SqlServer -Force
+# SECURITY: TrustServerCertificate skips TLS certificate validation - see the
+# warning under "TLS and SQL Server connections". Remove for production.
 $sqlParams = @{ TrustServerCertificate = $true }
 $inst = "$env:COMPUTERNAME\INST01"
 
@@ -879,6 +971,8 @@ Remove-PSSession $s
 From the primary node:
 ```powershell
 Import-Module SqlServer -Force
+# SECURITY: TrustServerCertificate skips TLS certificate validation - see the
+# warning under "TLS and SQL Server connections". Remove for production.
 $sqlParams = @{ TrustServerCertificate = $true }
 
 # Check DAG exists

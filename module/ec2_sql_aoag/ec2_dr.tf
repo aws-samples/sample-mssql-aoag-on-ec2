@@ -2,14 +2,25 @@
 # SPDX-License-Identifier: MIT-0
 
 ###############################################################################
-# DR Primary ENI per node - with 2 secondary IPs (1 for WSFC CNO, 1 for AG Listener)
+# DR Primary ENI per node
+#
+# Secondary IPs: index 0 is used for the WSFC CNO, index 1 for the AG Listener.
+# See ec2.tf for why private_ips_count is floored at 2.
+#
+# Security groups are the union of the module-managed DR SG, the cluster-wide
+# var.ec2_security_group_ids_dr, and any per-node vpc_security_group_ids.
 ###############################################################################
 resource "aws_network_interface" "aoag_node_eni_dr" {
   for_each          = var.deploy_dr ? var.instances_data_map_dr : {}
   provider          = aws.drsite
   subnet_id         = each.value.subnet_id
-  private_ips_count = 2
-  security_groups   = compact([try(aws_security_group.aoag_node_access_dr[0].id, ""), var.ec2_security_group_ids_dr])
+  private_ips_count = max(2, try(each.value.private_ips_count, 2))
+
+  security_groups = distinct(compact(concat(
+    [try(aws_security_group.aoag_node_access_dr[0].id, "")],
+    [var.ec2_security_group_ids_dr],
+    try(tolist(each.value.vpc_security_group_ids), []),
+  )))
 
   tags = merge(var.tags, {
     Name = "${each.key}-eni"
